@@ -1,36 +1,38 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Irene — AI image generator
 
-## Getting Started
+Local-first Next.js app that generates images with Qwen-Image-2.1 (GGUF) on a
+RunPod Serverless GPU. The browser talks only to Next.js; Next.js holds the
+RunPod key, tracks jobs in SQLite, and polls RunPod until each PNG lands in
+Cloudflare R2.
 
-First, run the development server:
+## Web app
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # fill in RUNPOD_API_KEY + RUNPOD_ENDPOINT_ID
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- `POST /api/generate` takes `{ prompt, steps? }`, returns `{ jobId }`.
+- `GET /api/generate/[jobId]` returns `queued | running | complete | failed`.
+- History lives in `data/generations.db` (gitignored, `SQLITE_PATH` overrides it).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## GPU worker (`gpu-worker/`)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Put the weights on a RunPod network volume from a temp pod:
+   `MODEL_ROOT=/runpod-volume/models ./gpu-worker/download-models.sh`
+   (~15 GB: Q4_K_M GGUF + INT8 text encoder + VAE).
+2. Create a Serverless endpoint from `gpu-worker/` (Dockerfile): 24 GB GPU,
+   Flex, min workers 0, max workers 1, FlashBoot on, idle timeout 5s, and an
+   execution timeout generous enough for a cold start plus the generation.
+   Attach the same network volume.
+3. Worker env vars: `BUCKET_ENDPOINT_URL`, `BUCKET_ACCESS_KEY_ID`,
+   `BUCKET_SECRET_ACCESS_KEY`, `R2_PUBLIC_BASE_URL`. Without them the worker
+   returns the PNG as inline base64 instead of uploading.
 
-## Learn More
+## Notes
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Qwen-Image-2.1 weights are under the Qwen Research License
+  (non-commercial unless you get a separate license), and the GGUF build has
+  no safety checker. Fine for local/dev; add safeguards + licensing before
+  going public or charging.
