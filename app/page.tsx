@@ -14,13 +14,76 @@ interface HistoryItem {
   createdAt: string;
 }
 
+type RefRoleId = "face" | "outfit" | "pose" | "style" | "scene";
+
+interface RefRole {
+  id: RefRoleId;
+  label: string;
+  hint: string;
+  // builds the sentence that binds the model's <imageN> tag to this role
+  sentence: (tag: string) => string;
+}
+
+const REF_ROLES: RefRole[] = [
+  {
+    id: "face",
+    label: "Face",
+    hint: "who to keep",
+    sentence: (t) =>
+      `${t} is the face reference. Preserve this exact person's identity, facial features, and hairstyle.`,
+  },
+  {
+    id: "outfit",
+    label: "Outfit",
+    hint: "what they wear",
+    sentence: (t) =>
+      `${t} shows the outfit. Dress the subject in exactly this clothing, matching colors and details.`,
+  },
+  {
+    id: "pose",
+    label: "Pose",
+    hint: "how they stand",
+    sentence: (t) =>
+      `${t} is the pose reference. Match the body position, framing, and camera angle.`,
+  },
+  {
+    id: "style",
+    label: "Style",
+    hint: "look and light",
+    sentence: (t) =>
+      `${t} is the style reference. Match its art style, lighting, mood, and color grading.`,
+  },
+  {
+    id: "scene",
+    label: "Scene",
+    hint: "where it happens",
+    sentence: (t) =>
+      `${t} is the scene reference. Set the image in this environment, matching its layout and details.`,
+  },
+];
+
 interface RefImage {
   id: string;
+  role: RefRoleId;
   dataUrl: string;
 }
 
+// filled buckets in canonical order, each taking the next <imageN> tag.
+// numbering stays contiguous no matter which buckets are filled.
+function assignRefTags(refs: RefImage[]) {
+  return REF_ROLES.flatMap((role) => {
+    const ref = refs.find((r) => r.role === role.id);
+    return ref ? [{ ref, role }] : [];
+  }).map((entry, i) => ({ ...entry, tag: `<image${i + 1}>` }));
+}
+
+function buildRefBlock(refs: RefImage[]): string {
+  return assignRefTags(refs)
+    .map(({ role, tag }) => role.sentence(tag))
+    .join(" ");
+}
+
 const POLL_MS = 3000;
-const MAX_REFS = 3;
 const REF_MAX_DIM = 1024;
 
 // shrink uploads to 1024px so the runpod payload stays small. the worker's
@@ -54,7 +117,9 @@ export default function Home() {
   const [refs, setRefs] = useState<RefImage[]>([]);
   const [expanded, setExpanded] = useState<HistoryItem | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  const refTags = assignRefTags(refs);
+  const refBlock = buildRefBlock(refs);
 
   const stopPolling = useCallback(() => {
     if (timer.current) {
@@ -90,31 +155,22 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
 
-  async function handleRefFiles(files: FileList | null) {
+  // one image per bucket, replacing whatever was there before
+  async function handleRefFiles(role: RefRoleId, files: FileList | null) {
     if (!files || files.length === 0) return;
-    const room = MAX_REFS - refs.length;
-    if (room <= 0) {
-      setError(`Up to ${MAX_REFS} reference images per job.`);
-      return;
-    }
-    const picked = Array.from(files).slice(0, room);
     try {
-      const converted = await Promise.all(picked.map(fileToDataUrl));
+      const dataUrl = await fileToDataUrl(files[0]);
       setRefs((prev) => [
-        ...prev,
-        ...converted.map((dataUrl) => ({
+        ...prev.filter((r) => r.role !== role),
+        {
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          role,
           dataUrl,
-        })),
-      ].slice(0, MAX_REFS));
+        },
+      ]);
       setError(null);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not read those images."
-      );
-    } finally {
-      // let the same file be picked again after removing it
-      if (fileInput.current) fileInput.current.value = "";
+      setError(err instanceof Error ? err.message : "Could not read that image.");
     }
   }
 
@@ -164,16 +220,19 @@ export default function Home() {
     setStatus(null);
     setJobId(null);
 
+    // role sentences first, then the user's own description. images go
+    // in tag order so <image1> lines up with images[0] on the worker.
+    const fullPrompt = refBlock ? `${refBlock}\n\n${prompt.trim()}` : prompt.trim();
+    const orderedImages = refTags.map(({ ref }) => ref.dataUrl);
+
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: prompt.trim(),
+          prompt: fullPrompt,
           steps,
-          ...(refs.length > 0
-            ? { images: refs.map((r) => r.dataUrl) }
-            : {}),
+          ...(orderedImages.length > 0 ? { images: orderedImages } : {}),
         }),
       });
       const data = (await res.json()) as { jobId?: string; error?: string };
@@ -229,44 +288,68 @@ export default function Home() {
         <div className="refs">
           <span className="refs-label">
             Reference images{" "}
-            <small>
-              optional, up to {MAX_REFS} · name them in your prompt with
-              &lt;image1&gt;, &lt;image2&gt;…
-            </small>
+            <small>drop one per bucket, the prompt block builds itself</small>
           </span>
-          <div className="ref-thumbs">
-            {refs.map((r, i) => (
-              <span key={r.id} className="ref-thumb">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={r.dataUrl} alt={`Reference ${i + 1}`} />
-                <button
-                  type="button"
-                  className="ref-remove"
-                  aria-label={`Remove reference ${i + 1}`}
-                  disabled={submitting}
-                  onClick={() =>
-                    setRefs((prev) => prev.filter((x) => x.id !== r.id))
-                  }
+          <div className="buckets">
+            {REF_ROLES.map((role) => {
+              const filled = refTags.find((t) => t.role.id === role.id);
+              return (
+                <div
+                  key={role.id}
+                  className={`bucket${filled ? " filled" : ""}`}
                 >
-                  ×
-                </button>
-              </span>
-            ))}
-            {refs.length < MAX_REFS && (
-              <label className="ref-add">
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  multiple
-                  hidden
-                  disabled={submitting}
-                  onChange={(e) => handleRefFiles(e.target.files)}
-                />
-                + Add
-              </label>
-            )}
+                  <span className="bucket-label">
+                    {role.label}
+                    {filled && <em>{filled.tag}</em>}
+                  </span>
+                  {filled ? (
+                    <span className="bucket-thumb">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={filled.ref.dataUrl}
+                        alt={`${role.label} reference`}
+                      />
+                      <button
+                        type="button"
+                        className="ref-remove"
+                        aria-label={`Remove ${role.label} reference`}
+                        disabled={submitting}
+                        onClick={() =>
+                          setRefs((prev) =>
+                            prev.filter((r) => r.role !== role.id)
+                          )
+                        }
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ) : (
+                    <label className="bucket-add">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        hidden
+                        disabled={submitting}
+                        onChange={(e) => {
+                          handleRefFiles(role.id, e.target.files);
+                          // let the same file be picked again after removing it
+                          e.target.value = "";
+                        }}
+                      />
+                      <span>+</span>
+                      <small>{role.hint}</small>
+                    </label>
+                  )}
+                </div>
+              );
+            })}
           </div>
+          {refBlock && (
+            <div className="ref-preview">
+              <small>Built prompt block</small>
+              <p>{refBlock}</p>
+            </div>
+          )}
         </div>
         <button type="submit" disabled={busy || !prompt.trim()}>
           {busy ? "Generating..." : "Generate"}

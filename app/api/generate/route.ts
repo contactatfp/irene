@@ -11,7 +11,7 @@ const WIDTH = 1024;
 const HEIGHT = 1024;
 const DEFAULT_STEPS = 25;
 const MAX_PROMPT = 2000;
-const MAX_REFS = 3;
+const MAX_REFS = 5;
 const MAX_REF_CHARS = 4_000_000; // ~3MB per image after base64
 const MAX_REFS_TOTAL_CHARS = 10_000_000;
 

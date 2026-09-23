@@ -249,8 +249,8 @@ def handler(job):
     ref_images = job_input.get("images") or []
     if not isinstance(ref_images, list):
         return {"error": "input.images must be an array of data URLs."}
-    if len(ref_images) > 4:
-        return {"error": "at most 4 reference images per job."}
+    if len(ref_images) > 6:
+        return {"error": "at most 6 reference images per job."}
 
     width = round_to_block(clamp_int(job_input.get("width", 1024), 1024, 256, 2048))
     height = round_to_block(clamp_int(job_input.get("height", 1024), 1024, 256, 2048))
