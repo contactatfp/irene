@@ -3,6 +3,13 @@
 # this file as --file gpu-worker/Dockerfile, so COPY paths start at the root.
 FROM runpod/worker-comfyui:5.8.4-base
 
+# The base image's ComfyUI predates Qwen-Image 2.1. TextEncodeQwenImage21
+# was added in v0.37.0, and the workflow fails to queue without it.
+RUN git -C /comfyui fetch --depth 1 https://github.com/Comfy-Org/ComfyUI.git refs/tags/v0.37.0:refs/tags/v0.37.0 \
+    && git -C /comfyui checkout v0.37.0 \
+    && uv pip install -r /comfyui/requirements.txt \
+    && uv pip install "transformers>=4.50.3,<5" "huggingface-hub<1.0"
+
 # the leejet fork has native Qwen-Image 2.1 support. the older city96 fork
 # fails with "Unknown model architecture!", so clone this one explicitly
 # instead of going through the comfy registry.
