@@ -142,6 +142,10 @@ a {
   border: 1px solid color-mix(in srgb, #c0392b 35%, transparent);
   border-radius: 8px;
   padding: 12px;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 320px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .result img {
@@ -182,10 +186,20 @@ a {
 .history li {
   display: flex;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
+}
+
+.history-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-error {
+  margin-top: 8px;
+  max-height: 220px;
 }
 
 .history img {

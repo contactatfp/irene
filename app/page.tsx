@@ -9,6 +9,7 @@ interface HistoryItem {
   prompt: string;
   status: JobStatus;
   imageUrl: string | null;
+  error: string | null;
   createdAt: string;
 }
 
@@ -166,9 +167,9 @@ export default function Home() {
         </p>
       )}
       {error && (
-        <p className="error" role="alert">
+        <pre className="error" role="alert">
           {error}
-        </p>
+        </pre>
       )}
 
       {imageUrl && (
@@ -195,11 +196,12 @@ export default function Home() {
                 ) : (
                   <span className="thumb empty">{h.status}</span>
                 )}
-                <div>
+                <div className="history-body">
                   <p>{h.prompt}</p>
                   <small>
                     {h.status} · {new Date(h.createdAt).toLocaleString()}
                   </small>
+                  {h.error && <pre className="error history-error">{h.error}</pre>}
                 </div>
               </li>
             ))}

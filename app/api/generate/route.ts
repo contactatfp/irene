@@ -22,6 +22,7 @@ export async function GET() {
         prompt: r.prompt,
         status: r.status,
         imageUrl: r.image_url,
+        error: r.error,
         createdAt: r.created_at,
       })),
     });

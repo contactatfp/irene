@@ -24,5 +24,6 @@ RUN uv pip install "boto3<1.40"
 # job. client-supplied workflow graphs are intentionally not accepted.
 COPY gpu-worker/handler.py /handler.py
 COPY gpu-worker/workflow_api.json /workflow_api.json
+COPY gpu-worker/extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 
 CMD ["/start.sh"]

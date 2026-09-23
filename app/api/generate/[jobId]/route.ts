@@ -9,6 +9,29 @@ import {
 
 export const runtime = "nodejs";
 
+function asErrorText(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (value && typeof value === "object") return JSON.stringify(value, null, 2);
+  return null;
+}
+
+function failureMessage(job: {
+  error?: unknown;
+  output?: unknown;
+  status: RunPodStatus;
+}): string {
+  const direct = asErrorText(job.error);
+  if (direct) return direct;
+  if (job.output && typeof job.output === "object" && "error" in job.output) {
+    const nested = asErrorText((job.output as { error: unknown }).error);
+    if (nested) return nested;
+  }
+  if (job.status === "TIMED_OUT") return "Job timed out waiting for a GPU worker.";
+  if (job.status === "CANCELLED") return "Job was cancelled.";
+  if (job.status === "COMPLETED") return "RunPod job completed but returned no image.";
+  return "Generation failed on the GPU worker.";
+}
+
 function mapStatus(status: RunPodStatus) {
   switch (status) {
     case "IN_QUEUE":
@@ -63,7 +86,7 @@ export async function GET(
       if (!imageUrl) {
         const updated = updateGeneration(jobId, {
           status: "failed",
-          error: "RunPod job completed but returned no image.",
+          error: failureMessage(job),
         });
         return NextResponse.json({
           jobId,
@@ -83,13 +106,7 @@ export async function GET(
     }
 
     if (status === "failed") {
-      const message =
-        job.error ??
-        (job.status === "TIMED_OUT"
-          ? "Job timed out waiting for a GPU worker."
-          : job.status === "CANCELLED"
-            ? "Job was cancelled."
-            : "Generation failed on the GPU worker.");
+      const message = failureMessage(job);
       const updated = updateGeneration(jobId, { status, error: message });
       return NextResponse.json({
         jobId,

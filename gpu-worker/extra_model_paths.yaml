@@ -1,0 +1,26 @@
+# Replaces the stock worker file. The weights live under diffusion_models
+# and text_encoders; the stock yaml only looked in unet/ and clip/, so
+# UnetLoaderGGUF's file list was empty. ComfyUI splits these on newlines,
+# it does not accept a YAML list.
+runpod_worker_comfy:
+  base_path: /runpod-volume
+  checkpoints: models/checkpoints/
+  clip: |
+    models/clip/
+    models/text_encoders/
+  text_encoders: |
+    models/text_encoders/
+    models/clip/
+  clip_vision: models/clip_vision/
+  configs: models/configs/
+  controlnet: models/controlnet/
+  embeddings: models/embeddings/
+  loras: models/loras/
+  upscale_models: models/upscale_models/
+  vae: models/vae/
+  unet: |
+    models/unet/
+    models/diffusion_models/
+  diffusion_models: |
+    models/diffusion_models/
+    models/unet/

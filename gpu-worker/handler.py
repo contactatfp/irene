@@ -56,6 +56,47 @@ def wait_for_comfy():
     )
 
 
+def list_volume_models():
+    # so a "not in []" error shows whether the volume mounted and where the files landed
+    root = "/runpod-volume/models"
+    if not os.path.isdir(root):
+        return [f"{root} is not mounted"]
+    found = []
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if name.startswith("."):
+                continue
+            found.append(os.path.relpath(os.path.join(dirpath, name), root))
+    found.sort()
+    if not found:
+        return [f"{root} is mounted but empty"]
+    shown = found[:40]
+    if len(found) > len(shown):
+        shown.append(f"... {len(found) - len(shown)} more")
+    return shown
+
+
+def explain_comfy_rejection(body):
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return body[:8000]
+    err = payload.get("error") or {}
+    lines = []
+    if err.get("message"):
+        lines.append(str(err["message"]))
+    if err.get("details"):
+        lines.append(str(err["details"]))
+    for node_id, info in (payload.get("node_errors") or {}).items():
+        title = (info or {}).get("class_type") or node_id
+        for item in (info or {}).get("errors") or []:
+            detail = item.get("details") or item.get("message") or item
+            lines.append(f"node {node_id} ({title}): {detail}")
+    lines.append("models on the volume:")
+    lines.extend(f"  {path}" for path in list_volume_models())
+    return "\n".join(lines)[:8000]
+
+
 def queue_workflow(workflow, client_id):
     r = requests.post(
         f"{COMFY_BASE}/prompt",
@@ -63,10 +104,10 @@ def queue_workflow(workflow, client_id):
         timeout=30,
     )
     if r.status_code != 200:
-        raise RuntimeError(f"ComfyUI rejected the workflow: {r.text[:500]}")
+        raise RuntimeError(explain_comfy_rejection(r.text))
     prompt_id = r.json().get("prompt_id")
     if not prompt_id:
-        raise RuntimeError(f"No prompt_id in ComfyUI response: {r.text[:500]}")
+        raise RuntimeError(f"No prompt_id in ComfyUI response: {r.text[:2000]}")
     return prompt_id
 
 
