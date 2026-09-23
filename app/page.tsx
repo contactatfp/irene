@@ -10,10 +10,37 @@ interface HistoryItem {
   status: JobStatus;
   imageUrl: string | null;
   error: string | null;
+  refCount: number;
   createdAt: string;
 }
 
+interface RefImage {
+  id: string;
+  dataUrl: string;
+}
+
 const POLL_MS = 3000;
+const MAX_REFS = 3;
+const REF_MAX_DIM = 1024;
+
+// shrink uploads to 1024px so the runpod payload stays small. the worker's
+// encoder resizes to ~1024 anyway, and png keeps alpha for RGBA refs.
+async function fileToDataUrl(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, REF_MAX_DIM / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is not available in this browser.");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  return file.type === "image/png"
+    ? canvas.toDataURL("image/png")
+    : canvas.toDataURL("image/jpeg", 0.85);
+}
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
@@ -24,7 +51,10 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [refs, setRefs] = useState<RefImage[]>([]);
+  const [expanded, setExpanded] = useState<HistoryItem | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
   const stopPolling = useCallback(() => {
     if (timer.current) {
@@ -49,6 +79,44 @@ export default function Home() {
   useEffect(() => {
     refreshHistory();
   }, [refreshHistory]);
+
+  // esc closes the expanded view
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpanded(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
+
+  async function handleRefFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const room = MAX_REFS - refs.length;
+    if (room <= 0) {
+      setError(`Up to ${MAX_REFS} reference images per job.`);
+      return;
+    }
+    const picked = Array.from(files).slice(0, room);
+    try {
+      const converted = await Promise.all(picked.map(fileToDataUrl));
+      setRefs((prev) => [
+        ...prev,
+        ...converted.map((dataUrl) => ({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          dataUrl,
+        })),
+      ].slice(0, MAX_REFS));
+      setError(null);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not read those images."
+      );
+    } finally {
+      // let the same file be picked again after removing it
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
 
   const pollStatus = useCallback(
     async (id: string) => {
@@ -100,7 +168,13 @@ export default function Home() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: prompt.trim(), steps }),
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          steps,
+          ...(refs.length > 0
+            ? { images: refs.map((r) => r.dataUrl) }
+            : {}),
+        }),
       });
       const data = (await res.json()) as { jobId?: string; error?: string };
       if (!res.ok || !data.jobId) {
@@ -152,6 +226,48 @@ export default function Home() {
             />
           </label>
         </div>
+        <div className="refs">
+          <span className="refs-label">
+            Reference images{" "}
+            <small>
+              optional, up to {MAX_REFS} · name them in your prompt with
+              &lt;image1&gt;, &lt;image2&gt;…
+            </small>
+          </span>
+          <div className="ref-thumbs">
+            {refs.map((r, i) => (
+              <span key={r.id} className="ref-thumb">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={r.dataUrl} alt={`Reference ${i + 1}`} />
+                <button
+                  type="button"
+                  className="ref-remove"
+                  aria-label={`Remove reference ${i + 1}`}
+                  disabled={submitting}
+                  onClick={() =>
+                    setRefs((prev) => prev.filter((x) => x.id !== r.id))
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {refs.length < MAX_REFS && (
+              <label className="ref-add">
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  multiple
+                  hidden
+                  disabled={submitting}
+                  onChange={(e) => handleRefFiles(e.target.files)}
+                />
+                + Add
+              </label>
+            )}
+          </div>
+        </div>
         <button type="submit" disabled={busy || !prompt.trim()}>
           {busy ? "Generating..." : "Generate"}
         </button>
@@ -191,8 +307,15 @@ export default function Home() {
             {history.map((h) => (
               <li key={h.jobId}>
                 {h.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={h.imageUrl} alt="" width={72} height={72} />
+                  <button
+                    type="button"
+                    className="thumb-btn"
+                    onClick={() => setExpanded(h)}
+                    aria-label="Expand image"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={h.imageUrl} alt="" width={72} height={72} />
+                  </button>
                 ) : (
                   <span className="thumb empty">{h.status}</span>
                 )}
@@ -200,6 +323,8 @@ export default function Home() {
                   <p>{h.prompt}</p>
                   <small>
                     {h.status} · {new Date(h.createdAt).toLocaleString()}
+                    {h.refCount > 0 &&
+                      ` · ${h.refCount} ref${h.refCount === 1 ? "" : "s"}`}
                   </small>
                   {h.error && <pre className="error history-error">{h.error}</pre>}
                 </div>
@@ -207,6 +332,42 @@ export default function Home() {
             ))}
           </ul>
         </section>
+      )}
+
+      {expanded?.imageUrl && (
+        <div
+          className="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Expanded generation"
+          onClick={() => setExpanded(null)}
+        >
+          <div
+            className="lightbox-inner"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={expanded.imageUrl} alt={expanded.prompt} />
+            <p>{expanded.prompt}</p>
+            <small>
+              {expanded.status} ·{" "}
+              {new Date(expanded.createdAt).toLocaleString()}
+              {expanded.refCount > 0 &&
+                ` · ${expanded.refCount} ref${expanded.refCount === 1 ? "" : "s"}`}
+            </small>
+            <div className="lightbox-actions">
+              <a
+                href={expanded.imageUrl}
+                download={`irene-${expanded.jobId}.png`}
+              >
+                Download
+              </a>
+              <button type="button" onClick={() => setExpanded(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

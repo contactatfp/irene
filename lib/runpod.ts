@@ -5,6 +5,8 @@ export interface RunPodJobInput {
   width: number;
   height: number;
   steps: number;
+  // optional reference images as data URLs, forwarded to the worker as-is
+  images?: string[];
 }
 
 export type RunPodStatus =

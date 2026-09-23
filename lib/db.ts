@@ -17,6 +17,7 @@ export interface GenerationRow {
   width: number;
   height: number;
   steps: number;
+  ref_count: number;
   image_url: string | null;
   error: string | null;
   created_at: string;
@@ -46,6 +47,7 @@ function openDb(): Database.Database {
       width INTEGER NOT NULL DEFAULT 1024,
       height INTEGER NOT NULL DEFAULT 1024,
       steps INTEGER NOT NULL DEFAULT 25,
+      ref_count INTEGER NOT NULL DEFAULT 0,
       image_url TEXT,
       error TEXT,
       created_at TEXT NOT NULL,
@@ -55,6 +57,16 @@ function openDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_generations_created
       ON generations (created_at DESC);
   `);
+
+  // older local DBs predate ref_count, add it in place
+  const columns = db
+    .prepare(`PRAGMA table_info(generations)`)
+    .all() as { name: string }[];
+  if (!columns.some((c) => c.name === "ref_count")) {
+    db.exec(
+      `ALTER TABLE generations ADD COLUMN ref_count INTEGER NOT NULL DEFAULT 0`
+    );
+  }
 
   globalThis.__ireneDb = db;
   return db;
@@ -66,13 +78,14 @@ export function createGeneration(row: {
   width: number;
   height: number;
   steps: number;
+  refCount?: number;
 }): GenerationRow {
   const db = openDb();
   const createdAt = new Date().toISOString();
   db.prepare(
-    `INSERT INTO generations (job_id, prompt, status, width, height, steps, created_at)
-     VALUES (@jobId, @prompt, 'queued', @width, @height, @steps, @createdAt)`
-  ).run({ ...row, createdAt });
+    `INSERT INTO generations (job_id, prompt, status, width, height, steps, ref_count, created_at)
+     VALUES (@jobId, @prompt, 'queued', @width, @height, @steps, @refCount, @createdAt)`
+  ).run({ ...row, refCount: row.refCount ?? 0, createdAt });
   return getGeneration(row.jobId)!;
 }
 

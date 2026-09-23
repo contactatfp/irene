@@ -1,16 +1,19 @@
 """RunPod serverless handler: Qwen-Image-2.1 GGUF text-to-image via local ComfyUI.
 
-Expects {"input": {"prompt": str, "width": 1024, "height": 1024, "steps": 25}}.
-Patches those into the fixed workflow, queues it on the ComfyUI instance that
-start.sh boots alongside this handler, uploads the PNG to R2, and returns
-{"image_url": ...}. Arbitrary client workflows are not accepted on purpose.
+Expects {"input": {"prompt": str, "width": 1024, "height": 1024, "steps": 25,
+"images": ["data:image/...;base64,..."]}}. Patches those into the fixed
+workflow, queues it on the ComfyUI instance that start.sh boots alongside
+this handler, uploads the PNG to R2, and returns {"image_url": ...}.
+Arbitrary client workflows are not accepted on purpose.
 """
 
 import base64
+import binascii
 import copy
 import json
 import os
 import random
+import re
 import time
 import uuid
 from urllib.parse import urlparse
@@ -95,6 +98,36 @@ def explain_comfy_rejection(body):
     lines.append("models on the volume:")
     lines.extend(f"  {path}" for path in list_volume_models())
     return "\n".join(lines)[:8000]
+
+
+def upload_reference(data_url, job_id, index):
+    # reference image in, ComfyUI input filename out. LoadImage nodes point
+    # at files in comfy's input dir, so the bytes have to be uploaded first.
+    match = re.match(
+        r"data:(image/(?:png|jpeg|webp));base64,(.+)", data_url or "", re.DOTALL
+    )
+    if not match:
+        raise ValueError(
+            f"reference image {index + 1} is not a png/jpeg/webp data URL."
+        )
+    mime, b64 = match.groups()
+    ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError(f"reference image {index + 1} has invalid base64.")
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError(f"reference image {index + 1} is over 8MB.")
+    filename = f"irene_{job_id[:12]}_{index}.{ext}"
+    r = requests.post(
+        f"{COMFY_BASE}/upload/image",
+        files={"image": (filename, raw, mime)},
+        data={"overwrite": "true", "type": "input"},
+        timeout=120,
+    )
+    if not r.ok:
+        raise RuntimeError(f"ComfyUI image upload failed: {r.text[:500]}")
+    return r.json().get("name") or filename
 
 
 def queue_workflow(workflow, client_id):
@@ -213,6 +246,12 @@ def handler(job):
     if not prompt:
         return {"error": "input.prompt is required."}
 
+    ref_images = job_input.get("images") or []
+    if not isinstance(ref_images, list):
+        return {"error": "input.images must be an array of data URLs."}
+    if len(ref_images) > 4:
+        return {"error": "at most 4 reference images per job."}
+
     width = round_to_block(clamp_int(job_input.get("width", 1024), 1024, 256, 2048))
     height = round_to_block(clamp_int(job_input.get("height", 1024), 1024, 256, 2048))
     steps = clamp_int(job_input.get("steps", 25), 25, 1, 50)
@@ -222,7 +261,10 @@ def handler(job):
     except (TypeError, ValueError):
         seed = random.randint(0, 2**31 - 1)
 
-    log(f"job {job_id}: {width}x{height}, {steps} steps, seed {seed}")
+    log(
+        f"job {job_id}: {width}x{height}, {steps} steps, seed {seed}, "
+        f"{len(ref_images)} refs"
+    )
 
     workflow = copy.deepcopy(WORKFLOW_TEMPLATE)
     workflow["4"]["inputs"]["prompt"] = prompt
@@ -233,6 +275,20 @@ def handler(job):
 
     try:
         wait_for_comfy()
+        if ref_images:
+            # TextEncodeQwenImage21 takes refs as images.image_1..N, and the
+            # vae input turns them into reference latents for tighter edits.
+            workflow["4"]["inputs"]["vae"] = ["3", 0]
+            for i, data_url in enumerate(ref_images):
+                name = upload_reference(data_url, job_id, i)
+                node_id = str(101 + i)
+                workflow[node_id] = {
+                    "class_type": "LoadImage",
+                    "inputs": {"image": name},
+                    "_meta": {"title": f"Reference {i + 1}"},
+                }
+                workflow["4"]["inputs"][f"images.image_{i + 1}"] = [node_id, 0]
+            log(f"job {job_id}: attached {len(ref_images)} reference images")
         client_id = uuid.uuid4().hex
         prompt_id = queue_workflow(workflow, client_id)
         log(f"job {job_id}: queued as {prompt_id}")
